@@ -1,0 +1,170 @@
+'use client'
+
+import { FormEvent, useEffect, useState } from 'react'
+import { createClient } from '@supabase/supabase-js'
+import { Bot, CheckCircle2, Database, Home, LogOut, MapPin, Send, ShieldCheck, SlidersHorizontal, Sparkles, User } from 'lucide-react'
+
+type Property = {
+  property_id: number
+  representative_title?: string | null
+  city?: string | null
+  neighbourhood?: string | null
+  price_egp?: number | null
+  area_m2?: number | null
+  rooms?: number | null
+  baths?: number | null
+  property_type?: string | null
+  url?: string | null
+}
+type Message = { role: 'assistant' | 'user'; text: string }
+
+const suggestions = ['شقق في القاهرة', 'فيلا بحديقة', 'أقل من ٣ مليون']
+
+// Browser-side Supabase client (anon key is public by design). Login UI is hidden if not configured.
+const authUrl = process.env.NEXT_PUBLIC_ACCOUNTS_SUPABASE_URL
+const authKey = process.env.NEXT_PUBLIC_ACCOUNTS_SUPABASE_ANON_KEY
+const sb = authUrl && authKey ? createClient(authUrl, authKey) : null
+
+export default function Page() {
+  const [input, setInput] = useState('')
+  const [messages, setMessages] = useState<Message[]>([])
+  const [results, setResults] = useState<Property[]>([])
+  const [isTyping, setIsTyping] = useState(false)
+  const [sessionId, setSessionId] = useState(() => `web_${crypto.randomUUID()}`)
+  const [lastFilters, setLastFilters] = useState<Record<string, unknown> | undefined>(undefined)
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginCode, setLoginCode] = useState('')
+  const [codeSent, setCodeSent] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authMsg, setAuthMsg] = useState('')
+  const [quota, setQuota] = useState<{ remaining?: number; limit: number; signedIn: boolean } | null>(null)
+
+  useEffect(() => {
+    if (!sb) return
+    sb.auth.getSession().then(({ data }) => {
+      setAccessToken(data.session?.access_token ?? null)
+      setUserEmail(data.session?.user.email ?? null)
+    })
+    const { data } = sb.auth.onAuthStateChange((_event, session) => {
+      setAccessToken(session?.access_token ?? null)
+      setUserEmail(session?.user.email ?? null)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  async function sendCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!sb || authBusy) return
+    setAuthBusy(true)
+    setAuthMsg('')
+    const { error } = await sb.auth.signInWithOtp({ email: loginEmail.trim(), options: { shouldCreateUser: true } })
+    setAuthBusy(false)
+    if (error) return setAuthMsg('تعذر إرسال الكود. تأكد من الإيميل وجرّب بعد شوية.')
+    setCodeSent(true)
+    setAuthMsg('بعتنالك كود على الإيميل. اكتبه هنا.')
+  }
+
+  async function verifyCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!sb || authBusy) return
+    setAuthBusy(true)
+    const { error } = await sb.auth.verifyOtp({ email: loginEmail.trim(), token: loginCode.trim(), type: 'email' })
+    setAuthBusy(false)
+    if (error) return setAuthMsg('الكود غلط أو انتهت صلاحيته.')
+    setLoginOpen(false)
+    setCodeSent(false)
+    setLoginCode('')
+    setAuthMsg('')
+    setQuota(null)
+  }
+
+  async function signOut() {
+    await sb?.auth.signOut()
+    setQuota(null)
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const text = input.trim()
+    if (!text || isTyping) return
+
+    const history = messages.map(({ role, text: content }) => ({ role, content }))
+    setMessages((current) => [...current, { role: 'user', text }])
+    setInput('')
+    setResults([])
+    setIsTyping(true)
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
+        body: JSON.stringify({ message: text, sessionId, history, priorFilters: lastFilters }),
+      })
+      const data = await response.json()
+      if (data.quota) setQuota(data.quota)
+      if (!response.ok) {
+        if (data.code === 'login_required' && sb) setLoginOpen(true)
+        // 400/429/503 carry a user-facing message in the user's language
+        setMessages((current) => [...current, { role: 'assistant', text: data.error || 'حصلت مشكلة مؤقتة. جرّب تاني.' }])
+        return
+      }
+      setSessionId(data.sessionId || sessionId)
+      if (data.filters && Object.keys(data.filters).length) setLastFilters(data.filters)
+      setMessages((current) => [...current, { role: 'assistant', text: data.text }])
+      setResults(Array.isArray(data.properties) ? data.properties : [])
+    } catch (error) {
+      console.error('[v0] Chat request failed:', error)
+      setMessages((current) => [...current, { role: 'assistant', text: 'حصلت مشكلة مؤقتة في الاتصال. جرّب نفس الطلب مرة تانية.' }])
+    } finally {
+      setIsTyping(false)
+    }
+  }
+
+  return (
+    <main dir="rtl" className="min-h-screen bg-[#f4f7f7] text-[#18313a]">
+      <header className="border-b border-[#dfe9e8] bg-white"><div className="mx-auto flex h-[68px] max-w-[1180px] items-center justify-between px-6"><div className="flex items-center gap-3"><div className="flex size-10 items-center justify-center rounded-xl bg-[#0d5960] text-white"><Home size={19} /></div><div><p className="text-[16px] font-extrabold">Estatio <span className="text-[#159493]">AI</span></p><p className="text-[11px] text-[#789095]">البحث العقاري بذكاء</p></div></div><div className="hidden items-center gap-2 rounded-full border border-[#cce9dc] bg-[#f1fbf5] px-3 py-1.5 text-[11px] font-bold text-[#287a59] sm:flex"><span className="size-2 rounded-full bg-[#36b476]" /> متصل بقاعدة العقارات</div></div></header>
+      {sb && (
+        <div className="border-b border-[#dfe9e8] bg-[#fbfdfd]">
+          <div className="mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-3 px-6 py-2 text-xs text-[#49636a]">
+            <span>
+              {userEmail ? `مسجّل بـ ${userEmail}` : 'تجربة مجانية بدون تسجيل'}
+              {quota?.remaining !== undefined && <b className="mr-2 rounded-full bg-[#e4f5f2] px-2 py-0.5 text-[#0d5960]">باقي {quota.remaining.toLocaleString('ar-EG')} من {quota.limit.toLocaleString('ar-EG')} رسايل النهارده</b>}
+            </span>
+            {userEmail ? (
+              <button onClick={signOut} className="flex items-center gap-1 font-bold text-[#0d5960]"><LogOut size={13} /> خروج</button>
+            ) : (
+              <button onClick={() => setLoginOpen((v) => !v)} className="font-bold text-[#0d5960] underline">سجّل دخولك بالإيميل</button>
+            )}
+          </div>
+          {loginOpen && !userEmail && (
+            <div className="mx-auto max-w-[1180px] px-6 pb-3">
+              {!codeSent ? (
+                <form onSubmit={sendCode} className="flex max-w-md gap-2">
+                  <input type="email" required dir="ltr" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="you@example.com" aria-label="الإيميل" className="min-w-0 flex-1 rounded-lg border border-[#d5e3e1] bg-white px-3 py-2 text-sm outline-none" />
+                  <button disabled={authBusy} className="rounded-lg bg-[#0d5960] px-4 text-xs font-bold text-white disabled:opacity-50">ابعت الكود</button>
+                </form>
+              ) : (
+                <form onSubmit={verifyCode} className="flex max-w-md gap-2">
+                  <input required inputMode="numeric" autoComplete="one-time-code" dir="ltr" maxLength={10} value={loginCode} onChange={(e) => setLoginCode(e.target.value)} placeholder="الكود" aria-label="كود التحقق" className="min-w-0 flex-1 rounded-lg border border-[#d5e3e1] bg-white px-3 py-2 text-sm tracking-widest outline-none" />
+                  <button disabled={authBusy} className="rounded-lg bg-[#0d5960] px-4 text-xs font-bold text-white disabled:opacity-50">تأكيد</button>
+                </form>
+              )}
+              {authMsg && <p className="mt-2 text-[11px] text-[#527176]">{authMsg}</p>}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mx-auto grid max-w-[1180px] gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[250px_1fr]">
+        <aside className="order-2 h-fit rounded-2xl border border-[#dfe9e8] bg-white p-5 lg:order-1"><div className="mb-5 flex items-center gap-2 text-sm font-extrabold"><SlidersHorizontal size={17} className="text-[#139493]" /> خصّص بحثك</div><div className="space-y-4 text-xs"><label className="block"><span className="mb-2 block font-bold text-[#49636a]">نوع العقار</span><select className="w-full rounded-xl border border-[#dfe8e8] bg-white px-3 py-2.5"><option>كل العقارات</option><option>شقق</option><option>فلل</option></select></label><div className="flex items-center gap-2 rounded-xl border border-[#dfe8e8] px-3 py-2.5 text-[#60797e]"><MapPin size={14} className="text-[#159493]" /> البحث من قاعدة العقارات</div></div><div className="mt-6 rounded-xl bg-[#f1f8f7] p-3 text-[11px] leading-5 text-[#527176]"><Database size={15} className="mb-1 text-[#159493]" /><b>اتصال حقيقي</b><br />النتائج المعروضة تأتي من Supabase، وليست بيانات تجريبية.</div></aside>
+        <section className="order-1 flex min-h-[calc(100vh-122px)] flex-col overflow-hidden rounded-2xl border border-[#dfe9e8] bg-white shadow-[0_12px_38px_rgba(20,61,65,.06)] lg:order-2">
+          <div className="flex items-center justify-between border-b border-[#edf2f1] px-5 py-4"><div className="flex items-center gap-3"><div className="flex size-10 items-center justify-center rounded-full bg-[#e4f5f2] text-[#138f90]"><Bot size={19} /></div><div><p className="text-sm font-extrabold">مساعد Estatio</p><p className="mt-0.5 flex items-center gap-1 text-[11px] text-[#4b9c77]"><CheckCircle2 size={12} /> RAG وذاكرة المحادثة مفعّلين</p></div></div><span className="rounded-full bg-[#f4f8f7] px-3 py-1 text-[10px] text-[#708489]">بحث مباشر</span></div>
+          <div className="flex-1 overflow-y-auto bg-[#fbfcfc] px-5 py-6">{messages.length === 0 ? <div className="flex min-h-[310px] flex-col items-center justify-center text-center"><div className="mb-4 flex size-16 items-center justify-center rounded-2xl bg-[#e5f5f2] text-[#139493]"><Sparkles size={28} /></div><h1 className="text-xl font-extrabold">إيه العقار اللي بتدور عليه؟</h1><p className="mt-2 max-w-sm text-sm leading-6 text-[#789095]">اكتب طلبك، وأنا هبحث في قاعدة البيانات وأفتكر سياق المحادثة.</p><div className="mt-6 flex flex-wrap justify-center gap-2">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => setInput(`رشحلي ${suggestion}`)} className="rounded-full border border-[#d8e8e5] bg-white px-3.5 py-2 text-[11px] font-semibold text-[#46777a]">{suggestion}</button>)}</div></div> : <div className="space-y-4">{messages.map((message, index) => <div key={index} className={`flex items-start gap-2 ${message.role === 'user' ? 'justify-start' : 'justify-end'}`}><div className={`flex max-w-[84%] items-start gap-2 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>{message.role === 'assistant' ? <div className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-[#dff3ef] text-[#138f90]"><Bot size={14} /></div> : <div className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-[#e8edef] text-[#718289]"><User size={14} /></div>}<div className={`rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'assistant' ? 'rounded-tr-sm bg-white text-[#304b52] shadow-sm ring-1 ring-[#e8efee]' : 'rounded-tl-sm bg-[#0d5960] text-white'}`}>{message.text}</div></div></div>)}{isTyping && <div className="flex items-center gap-2 text-xs text-[#829499]"><Bot size={15} /> يبحث في Supabase...</div>}{results.length > 0 && <div className="pt-2"><div className="mb-3 flex items-center gap-2 text-xs font-bold text-[#506a70]"><ShieldCheck size={15} className="text-[#2b9c73]" /> نتائج مطابقة من قاعدة البيانات ({results.length})</div><div className="grid gap-3 sm:grid-cols-2">{results.map((property) => <article key={property.property_id} className="rounded-2xl border border-[#dfe9e8] bg-white p-4"><h2 className="font-extrabold">{property.representative_title || property.property_type || 'عقار متاح'}</h2><p className="mt-1 text-xs text-[#708489]">{[property.neighbourhood, property.city].filter(Boolean).join('، ') || 'مصر'}</p><p className="mt-3 font-extrabold text-[#159493]">{property.price_egp ? `${Number(property.price_egp).toLocaleString('ar-EG')} جنيه` : 'السعر عند الطلب'}</p><p className="mt-1 text-xs text-[#789095]">{[property.area_m2 && `${property.area_m2} م²`, property.rooms && `${property.rooms} غرف`, property.baths && `${property.baths} حمام`].filter(Boolean).join(' • ')}</p>{property.url && <a href={property.url} target="_blank" rel="noreferrer" className="mt-3 inline-block text-xs font-bold text-[#0d5960] underline">فتح الإعلان</a>}</article>)}</div></div>}</div>}</div>
+          <div className="border-t border-[#edf2f1] bg-white p-4"><form onSubmit={submit} className="flex items-center gap-2 rounded-xl border border-[#d5e3e1] bg-[#fbfdfd] p-1.5"><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="مثال: عايز شقة في التجمع أقل من ٥ مليون" aria-label="طلبك العقاري" className="min-w-0 flex-1 bg-transparent px-3 text-sm outline-none" /><button type="submit" aria-label="إرسال" className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#0d5960] text-white disabled:opacity-50" disabled={isTyping}><Send size={16} /></button></form><p className="mt-2 text-center text-[10px] text-[#9aabad]">استخدم وصفاً واضحاً للموقع والميزانية ونوع العقار</p></div>
+        </section>
+      </div>
+    </main>
+  )
+}
