@@ -176,6 +176,9 @@ export function stripListingIds(text: string, ids: number[]): string {
   const alt = uniq.sort((x, y) => y.length - x.length).join("|");
   const id = `${MARKS}(?<![\\d.,])(?:${alt})(?![\\d.,])${MARKS}`;
   let out = text
+    // "الـ{123}" / "[123]" / "{ID: 123}" — the model sometimes wraps the id in braces; drop the whole token,
+    // including a dangling Arabic "الـ" article in front of it.
+    .replace(new RegExp(`(?:الـ)?\\s*[\\{\\[<]\\s*(?:${ID_LABEL}\\s*[:：]?\\s*)?${id}\\s*[\\}\\]>]`, "g"), "")
     // "(ID: 123)" / "(123)"
     .replace(new RegExp(`\\(\\s*(?:${ID_LABEL}\\s*[:：]?\\s*)?${id}\\s*\\)`, "g"), "")
     // bullet that starts with a (labelled) id:  "• 123 – ..." / "- ID 123: ..." / "- **123**: ..."
@@ -187,6 +190,8 @@ export function stripListingIds(text: string, ids: number[]): string {
   out = out
     .replace(/[\u200e\u200f]/g, "")
     .replace(/\(\s*\)/g, "")
+    // leftovers when the id sat inside braces/brackets: "الـ{}" / "{}" / "[]"
+    .replace(/(?:الـ)?\s*[\{\[]\s*[\}\]]/g, "")
     .replace(/([•*-]\s*)[:：–—-]\s*/g, "$1")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n");
